@@ -66,25 +66,25 @@ actor AdvertisingCanister {
     };
 
     type PerformanceMetrics = {
-        impressions: Nat;
-        clicks: Nat;
-        ctr: Float;
-        conversions: Nat;
-        conversionRate: Float;
-        spend: Float;
-        roi: Float;
+        responseTime: Int; // nanoseconds
+        loadTime: Int;    // nanoseconds
+        renderTime: Int;  // nanoseconds
+        timestamp: Int;
+    };
+
+    type ABTestMetrics = {
+        impressions: [Nat];
+        clicks: [Nat];
+        conversions: [Nat];
     };
 
     type ABTest = {
         id: Text;
         name: Text;
-        description: Text;
-        variants: [AdContent];
+        variants: [Text];
         startTime: Int;
         endTime: Int;
-        metrics: [(Text, PerformanceMetrics)];
-        winner: ?Text;
-        status: {#active; #completed; #cancelled};
+        metrics: ABTestMetrics;
     };
 
     // GDPR and Privacy types
@@ -163,6 +163,19 @@ actor AdvertisingCanister {
         suspiciousIpThreshold: Nat;
     };
 
+    // Ad Delivery Optimization types
+    type CacheEntry = {
+        ad: Ad;
+        expiresAt: Int;
+    };
+
+    type LoadBalancerStats = {
+        requestCount: Nat;
+        avgResponseTime: Int;
+        errorCount: Nat;
+        lastUpdated: Int;
+    };
+
     // Stable storage
     private stable var adEntries: [(AdId, Ad)] = [];
     private stable var placementEntries: [(PlacementId, AdPlacement)] = [];
@@ -202,6 +215,11 @@ actor AdvertisingCanister {
         minTimeBetweenClicks = 1_000_000_000; // 1 second
         suspiciousIpThreshold = 5;
     };
+
+    // Optimization storage
+    private var adCache = HashMap.HashMap<Text, CacheEntry>(0, Text.equal, Text.hash);
+    private var performanceLog = HashMap.HashMap<Text, [PerformanceMetrics]>(0, Text.equal, Text.hash);
+    private var loadStats = HashMap.HashMap<Text, LoadBalancerStats>(0, Text.equal, Text.hash);
 
     // System functions
     system func preupgrade() {
@@ -566,43 +584,29 @@ actor AdvertisingCanister {
     // Analytics functions
     public shared(msg) func createABTest(
         name: Text,
-        description: Text,
-        variants: [AdContent],
-        duration: Int
+        variants: [Text],
+        durationHours: Nat
     ) : async Result.Result<Text, Text> {
         if (not _isAdmin(msg.caller)) {
             return #err("Unauthorized");
         };
 
-        let testId = _generateId();
+        let testId = Principal.toText(msg.caller) # "_" # Int.toText(Time.now());
         let now = Time.now();
         
         let test: ABTest = {
             id = testId;
             name = name;
-            description = description;
             variants = variants;
             startTime = now;
-            endTime = now + duration;
-            metrics = Array.map<AdContent, (Text, PerformanceMetrics)>(
-                variants,
-                func(variant: AdContent): (Text, PerformanceMetrics) {
-                    let variantId = _generateId();
-                    (variantId, {
-                        impressions = 0;
-                        clicks = 0;
-                        ctr = 0.0;
-                        conversions = 0;
-                        conversionRate = 0.0;
-                        spend = 0.0;
-                        roi = 0.0;
-                    })
-                }
-            );
-            winner = null;
-            status = #active;
+            endTime = now + (durationHours * 3_600_000_000_000);
+            metrics = {
+                impressions = Array.freeze(Array.init<Nat>(variants.size(), 0));
+                clicks = Array.freeze(Array.init<Nat>(variants.size(), 0));
+                conversions = Array.freeze(Array.init<Nat>(variants.size(), 0));
+            };
         };
-
+        
         abTests.put(testId, test);
         #ok(testId)
     };
@@ -654,6 +658,90 @@ actor AdvertisingCanister {
                 abTests.put(testId, updatedTest);
                 #ok(())
             };
+        }
+    };
+
+    public shared(msg) func updateABTestMetrics(
+        testId: Text,
+        variantIndex: Nat,
+        metricType: {#impression; #click; #conversion}
+    ) : async Result.Result<(), Text> {
+        switch (abTests.get(testId)) {
+            case (null) { #err("Test not found") };
+            case (?test) {
+                if (variantIndex >= test.variants.size()) {
+                    return #err("Invalid variant index");
+                };
+                
+                let now = Time.now();
+                if (now < test.startTime or now > test.endTime) {
+                    return #err("Test not active");
+                };
+
+                let updatedTest = switch (metricType) {
+                    case (#impression) {
+                        let updatedImpressions = Array.tabulate<Nat>(
+                            test.variants.size(),
+                            func(i: Nat) : Nat {
+                                if (i == variantIndex) { test.metrics.impressions[i] + 1 }
+                                else { test.metrics.impressions[i] }
+                            }
+                        );
+                        {
+                            test with
+                            metrics = {
+                                impressions = updatedImpressions;
+                                clicks = test.metrics.clicks;
+                                conversions = test.metrics.conversions;
+                            }
+                        }
+                    };
+                    case (#click) {
+                        let updatedClicks = Array.tabulate<Nat>(
+                            test.variants.size(),
+                            func(i: Nat) : Nat {
+                                if (i == variantIndex) { test.metrics.clicks[i] + 1 }
+                                else { test.metrics.clicks[i] }
+                            }
+                        );
+                        {
+                            test with
+                            metrics = {
+                                impressions = test.metrics.impressions;
+                                clicks = updatedClicks;
+                                conversions = test.metrics.conversions;
+                            }
+                        }
+                    };
+                    case (#conversion) {
+                        let updatedConversions = Array.tabulate<Nat>(
+                            test.variants.size(),
+                            func(i: Nat) : Nat {
+                                if (i == variantIndex) { test.metrics.conversions[i] + 1 }
+                                else { test.metrics.conversions[i] }
+                            }
+                        );
+                        {
+                            test with
+                            metrics = {
+                                impressions = test.metrics.impressions;
+                                clicks = test.metrics.clicks;
+                                conversions = updatedConversions;
+                            }
+                        }
+                    };
+                };
+                
+                abTests.put(testId, updatedTest);
+                #ok(())
+            };
+        }
+    };
+
+    public query func getABTestResults(testId: Text) : async Result.Result<ABTest, Text> {
+        switch (abTests.get(testId)) {
+            case (null) { #err("Test not found") };
+            case (?test) { #ok(test) };
         }
     };
 
@@ -1156,5 +1244,138 @@ actor AdvertisingCanister {
         fraudScores.delete(userId);
         activityLog.delete(userId);
         #ok(())
+    };
+
+    // Cache management
+    private func _cacheAd(adId: Text, ad: Ad) {
+        let now = Time.now();
+        let cacheEntry = {
+            ad = ad;
+            expiresAt = now + 3_600_000_000_000; // 1 hour cache
+        };
+        adCache.put(adId, cacheEntry);
+    };
+
+    private func _getCachedAd(adId: Text) : ?Ad {
+        switch (adCache.get(adId)) {
+            case (null) { null };
+            case (?entry) {
+                if (Time.now() > entry.expiresAt) {
+                    adCache.delete(adId);
+                    null
+                } else {
+                    ?entry.ad
+                };
+            };
+        }
+    };
+
+    // Performance tracking
+    private func _logPerformance(adId: Text, metrics: PerformanceMetrics) {
+        let currentLog = switch (performanceLog.get(adId)) {
+            case (null) [];
+            case (?log) log;
+        };
+        
+        let updatedLog = Array.append(currentLog, [metrics]);
+        performanceLog.put(adId, updatedLog);
+    };
+
+    // Load balancing
+    private func _updateLoadStats(region: Text, responseTime: Int, isError: Bool) {
+        let now = Time.now();
+        let currentStats = switch (loadStats.get(region)) {
+            case (null) {
+                {
+                    requestCount = 0;
+                    avgResponseTime = 0;
+                    errorCount = 0;
+                    lastUpdated = now;
+                }
+            };
+            case (?stats) stats;
+        };
+        
+        let newStats = {
+            requestCount = currentStats.requestCount + 1;
+            avgResponseTime = (
+                (currentStats.avgResponseTime * currentStats.requestCount) + responseTime
+            ) / (currentStats.requestCount + 1);
+            errorCount = currentStats.errorCount + (if (isError) 1 else 0);
+            lastUpdated = now;
+        };
+        
+        loadStats.put(region, newStats);
+    };
+
+    // Modified ad serving with optimization
+    public query func getOptimizedAd(placementId: Text, region: Text) : async Result.Result<Ad, Text> {
+        let startTime = Time.now();
+        
+        // Try cache first
+        switch (placements.get(placementId)) {
+            case (null) { #err("Placement not found") };
+            case (?placement) {
+                let activeAds = _getActiveAdsForPlacement(placement);
+                if (activeAds.size() == 0) {
+                    return #err("No active ads for placement");
+                };
+                
+                // Check cache for each ad
+                for (adId in activeAds.vals()) {
+                    switch (_getCachedAd(adId)) {
+                        case (?ad) {
+                            // Log performance
+                            _logPerformance(adId, {
+                                responseTime = Time.now() - startTime;
+                                loadTime = 0; // Client-side metric
+                                renderTime = 0; // Client-side metric
+                                timestamp = Time.now();
+                            });
+                            
+                            // Update load stats
+                            _updateLoadStats(region, Time.now() - startTime, false);
+                            
+                            return #ok(ad);
+                        };
+                        case (null) {};
+                    };
+                };
+                
+                // If not in cache, get from storage
+                switch (ads.get(activeAds[0])) {
+                    case (null) { #err("Ad not found") };
+                    case (?ad) {
+                        // Cache the ad
+                        _cacheAd(activeAds[0], ad);
+                        
+                        // Log performance
+                        _logPerformance(activeAds[0], {
+                            responseTime = Time.now() - startTime;
+                            loadTime = 0;
+                            renderTime = 0;
+                            timestamp = Time.now();
+                        });
+                        
+                        // Update load stats
+                        _updateLoadStats(region, Time.now() - startTime, false);
+                        
+                        #ok(ad)
+                    };
+                }
+            };
+        }
+    };
+
+    // Performance monitoring endpoints
+    public query func getPerformanceMetrics(adId: Text) : async [PerformanceMetrics] {
+        switch (performanceLog.get(adId)) {
+            case (null) [];
+            case (?metrics) metrics;
+        }
+    };
+
+    public query func getLoadBalancerStats(region: Text) : async ?LoadBalancerStats {
+        loadStats.get(region)
     };
 }; 

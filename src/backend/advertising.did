@@ -86,13 +86,23 @@ type TimeRange = record {
 };
 
 type PerformanceMetrics = record {
-    impressions: nat;
-    clicks: nat;
-    ctr: float64;
-    conversions: nat;
-    conversionRate: float64;
-    spend: float64;
-    roi: float64;
+    responseTime: int;
+    loadTime: int;
+    renderTime: int;
+    timestamp: int;
+};
+
+type LoadBalancerStats = record {
+    requestCount: nat;
+    avgResponseTime: int;
+    errorCount: nat;
+    lastUpdated: int;
+};
+
+type ABTestMetrics = record {
+    impressions: vec nat;
+    clicks: vec nat;
+    conversions: vec nat;
 };
 
 type ABTest = record {
@@ -102,7 +112,7 @@ type ABTest = record {
     variants: vec AdContent;
     startTime: int;
     endTime: int;
-    metrics: vec record { text; PerformanceMetrics };
+    metrics: ABTestMetrics;
     winner: opt text;
     status: variant { active; completed; cancelled };
 };
@@ -200,4 +210,14 @@ service : {
     updateFraudThresholds: (FraudThresholds) -> (variant { ok: null; err: text });
     getFraudScore: (userId: text) -> (opt FraudScore) query;
     clearFraudScore: (userId: text) -> (variant { ok: null; err: text });
+
+    // Ad delivery optimization
+    getOptimizedAd: (placementId: text, region: text) -> (variant { ok: Ad; err: text }) query;
+    getPerformanceMetrics: (adId: text) -> (vec PerformanceMetrics) query;
+    getLoadBalancerStats: (region: text) -> (opt LoadBalancerStats) query;
+    
+    // A/B Testing
+    createABTest: (name: text, variants: vec text, durationHours: nat) -> (variant { ok: text; err: text });
+    updateABTestMetrics: (testId: text, variantIndex: nat, metricType: variant { impression; click; conversion }) -> (variant { ok; err: text });
+    getABTestResults: (testId: text) -> (variant { ok: ABTest; err: text }) query;
 }; 
