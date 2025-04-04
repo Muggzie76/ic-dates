@@ -68,12 +68,20 @@
       - [x] Content approval/rejection
       - [x] Automated status updates
     - [x] Fraud detection
-  - [ ] Optimize ad delivery
+  - [x] Optimize ad delivery
     - [x] Performance metrics tracking
     - [x] A/B testing framework
     - [x] Dynamic ad rotation
     - [x] Load balancing
     - [x] Caching strategy
+  - [x] System Monitoring
+    - [x] Error tracking and alerts
+    - [x] Performance monitoring
+    - [x] Usage monitoring
+    - [x] Cost tracking
+    - [x] Health checks
+    - [x] Alert management
+    - [x] Threshold configuration
 
 ## Testing
 - [ ] Write tests for subscription canister
@@ -122,6 +130,12 @@
     - [x] Test privacy-aware targeting
     - [ ] Test data portability
     - [ ] Test consent withdrawal
+- [x] Test system monitoring
+  - [x] Test alert generation
+  - [x] Test health checks
+  - [x] Test cost tracking
+  - [x] Test performance monitoring
+  - [x] Test threshold management
 
 ## Documentation
 - [ ] Document subscription system architecture
@@ -151,6 +165,12 @@
   - [ ] Integration guide
   - [ ] Security and compliance guide
   - [ ] Performance optimization guide
+- [x] System monitoring documentation
+  - [x] Alert system overview
+  - [x] Health check endpoints
+  - [x] Cost tracking features
+  - [x] Performance monitoring
+  - [x] Alert management guide
 
 ## Deployment
 - [ ] Deploy subscription canister
@@ -359,5 +379,27 @@
   - A/B testing framework
   - Dynamic ad rotation
   - Resource usage optimization
+
+- System Monitoring Features:
+  - Alert System
+    - Multiple severity levels (critical, warning, info)
+    - Alert lifecycle management (active, acknowledged, resolved)
+    - Detailed alert metadata
+    - Configurable thresholds
+  - Health Monitoring
+    - System status tracking (healthy, degraded, unhealthy)
+    - Resource usage monitoring
+    - Performance metrics tracking
+    - Active alert tracking
+  - Cost Tracking
+    - Cycles per request tracking
+    - Daily cost estimation
+    - Cost increase alerts
+    - Historical cost analysis
+  - Performance Monitoring
+    - Response time tracking
+    - Error rate monitoring
+    - Request volume tracking
+    - Resource utilization metrics
 
 Last Updated: April 2024 

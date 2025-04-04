@@ -162,6 +162,62 @@ type FraudThresholds = record {
     suspiciousIpThreshold: nat;
 };
 
+type AlertSeverity = variant {
+    critical;
+    warning;
+    info;
+};
+
+type AlertStatus = variant {
+    active;
+    acknowledged;
+    resolved;
+};
+
+type Alert = record {
+    id: text;
+    severity: AlertSeverity;
+    status: AlertStatus;
+    message: text;
+    timestamp: int;
+    acknowledgedBy: opt text;
+    resolvedBy: opt text;
+    resolvedAt: opt int;
+    metadata: opt record {
+        adId: opt text;
+        region: opt text;
+        errorCount: opt nat;
+        responseTime: opt int;
+    };
+};
+
+type HealthStatus = variant {
+    healthy;
+    degraded;
+    unhealthy;
+};
+
+type SystemHealth = record {
+    status: HealthStatus;
+    uptime: int;
+    lastChecked: int;
+    memoryUsage: nat;
+    cyclesBalance: nat;
+    activeAlerts: nat;
+    metrics: record {
+        requestCount: nat;
+        errorCount: nat;
+        avgResponseTime: int;
+    };
+};
+
+type CostMetrics = record {
+    cyclesPerRequest: nat;
+    totalCyclesUsed: nat;
+    estimatedDailyCost: nat;
+    timestamp: int;
+};
+
 service : {
     // Admin functions
     createAd: (AdContent, int, int, opt TargetAudience) -> (Result);
@@ -220,4 +276,12 @@ service : {
     createABTest: (name: text, variants: vec text, durationHours: nat) -> (variant { ok: text; err: text });
     updateABTestMetrics: (testId: text, variantIndex: nat, metricType: variant { impression; click; conversion }) -> (variant { ok; err: text });
     getABTestResults: (testId: text) -> (variant { ok: ABTest; err: text }) query;
+
+    // System monitoring endpoints
+    getSystemHealth: () -> (SystemHealth) query;
+    getActiveAlerts: () -> (vec Alert) query;
+    acknowledgeAlert: (text) -> (variant { ok; err: text });
+    resolveAlert: (text) -> (variant { ok; err: text });
+    updateAlertThresholds: (opt float64, opt int, opt nat, opt float64) -> (variant { ok; err: text });
+    getCostMetrics: (TimeRange) -> (vec CostMetrics) query;
 }; 

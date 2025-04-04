@@ -13,6 +13,7 @@ import Text "mo:base/Text";
 import Time "mo:base/Time";
 import Float "mo:base/Float";
 import Order "mo:base/Order";
+import Cycles "mo:base/Cycles";
 
 actor AdvertisingCanister {
     // Types
@@ -176,6 +177,63 @@ actor AdvertisingCanister {
         lastUpdated: Int;
     };
 
+    // System Monitoring types
+    type AlertSeverity = {
+        #critical;
+        #warning;
+        #info;
+    };
+
+    type AlertStatus = {
+        #active;
+        #acknowledged;
+        #resolved;
+    };
+
+    type Alert = {
+        id: Text;
+        severity: AlertSeverity;
+        status: AlertStatus;
+        message: Text;
+        timestamp: Int;
+        acknowledgedBy: ?Text;
+        resolvedBy: ?Text;
+        resolvedAt: ?Int;
+        metadata: ?{
+            adId: ?Text;
+            region: ?Text;
+            errorCount: ?Nat;
+            responseTime: ?Int;
+        };
+    };
+
+    type HealthStatus = {
+        #healthy;
+        #degraded;
+        #unhealthy;
+    };
+
+    type SystemHealth = {
+        status: HealthStatus;
+        uptime: Int;
+        lastChecked: Int;
+        memoryUsage: Nat;
+        cyclesBalance: Nat;
+        activeAlerts: Nat;
+        metrics: {
+            requestCount: Nat;
+            errorCount: Nat;
+            avgResponseTime: Int;
+        };
+    };
+
+    type CostMetrics = {
+        cyclesPerRequest: Nat;
+        totalCyclesUsed: Nat;
+        estimatedDailyCost: Nat;
+        timestamp: Int;
+    };
+
     // Stable storage
     private stable var adEntries: [(AdId, Ad)] = [];
     private stable var placementEntries: [(PlacementId, AdPlacement)] = [];
@@ -220,6 +278,20 @@ actor AdvertisingCanister {
     private var adCache = HashMap.HashMap<Text, CacheEntry>(0, Text.equal, Text.hash);
     private var performanceLog = HashMap.HashMap<Text, [PerformanceMetrics]>(0, Text.equal, Text.hash);
     private var loadStats = HashMap.HashMap<Text, LoadBalancerStats>(0, Text.equal, Text.hash);
+
+    // System monitoring storage
+    private var alerts = HashMap.HashMap<Text, Alert>(0, Text.equal, Text.hash);
+    private var systemMetrics = HashMap.HashMap<Text, Nat>(0, Text.equal, Text.hash);
+    private var costTracking = HashMap.HashMap<Int, CostMetrics>(0, Int.equal, Int.hash);
+    private var healthChecks = HashMap.HashMap<Text, Bool>(0, Text.equal, Text.hash);
+
+    // Alert thresholds
+    private var alertThresholds = {
+        var errorRateThreshold: Float = 0.05;
+        var responseTimeThreshold: Int = 1_000_000_000; // 1 second
+        var memoryUsageThreshold: Nat = 1_000_000_000; // 1GB
+        var costIncreaseThreshold: Float = 0.2; // 20% increase
+    };
 
     // System functions
     system func preupgrade() {
@@ -518,33 +590,43 @@ actor AdvertisingCanister {
         ipAddress: Text,
         userAgent: Text
     ) : async Result.Result<(), Text> {
-        let userId = Principal.toText(msg.caller);
+        let startTime = Time.now();
         
-        // Check for fraud
-        let shouldBlock = _updateFraudScore(userId, ipAddress, userAgent, #impression);
-        if (shouldBlock) {
-            return #err("Activity blocked due to suspicious behavior");
+        // Update request count
+        let currentRequests = Option.get(systemMetrics.get("totalRequests"), 0);
+        systemMetrics.put("totalRequests", currentRequests + 1);
+
+        let result = await* _recordImpression(adId, ipAddress, userAgent);
+        
+        // Update metrics
+        let endTime = Time.now();
+        let responseTime = endTime - startTime;
+        
+        let currentResponseTime = Option.get(systemMetrics.get("totalResponseTime"), 0);
+        systemMetrics.put("totalResponseTime", currentResponseTime + responseTime);
+
+        switch (result) {
+            case (#err(error)) {
+                let currentErrors = Option.get(systemMetrics.get("totalErrors"), 0);
+                systemMetrics.put("totalErrors", currentErrors + 1);
+
+                if (responseTime > alertThresholds.responseTimeThreshold) {
+                    ignore _createAlert(
+                        #warning,
+                        "High response time detected",
+                        ?{
+                            adId = ?adId;
+                            region = null;
+                            errorCount = null;
+                            responseTime = ?responseTime;
+                        }
+                    );
+                };
+            };
+            case (#ok(_)) {};
         };
 
-        switch (ads.get(adId)) {
-            case (null) { #err("Ad not found") };
-            case (?ad) {
-                let updatedMetrics = {
-                    impressions = ad.metrics.impressions + 1;
-                    clicks = ad.metrics.clicks;
-                    lastImpressionTime = Time.now();
-                };
-                
-                let updatedAd = {
-                    ad with
-                    metrics = updatedMetrics;
-                };
-                
-                ads.put(adId, updatedAd);
-                updateMetrics(adId, #impression, 0.0);
-                #ok(())
-            };
-        }
+        result
     };
 
     public shared(msg) func recordClick(
@@ -1377,5 +1459,222 @@ actor AdvertisingCanister {
 
     public query func getLoadBalancerStats(region: Text) : async ?LoadBalancerStats {
         loadStats.get(region)
+    };
+
+    // System monitoring functions
+    private func _createAlert(
+        severity: AlertSeverity,
+        message: Text,
+        metadata: ?{
+            adId: ?Text;
+            region: ?Text;
+            errorCount: ?Nat;
+            responseTime: ?Int;
+        }
+    ) : Text {
+        let alertId = _generateId();
+        let alert: Alert = {
+            id = alertId;
+            severity = severity;
+            status = #active;
+            message = message;
+            timestamp = Time.now();
+            acknowledgedBy = null;
+            resolvedBy = null;
+            resolvedAt = null;
+            metadata = metadata;
+        };
+        alerts.put(alertId, alert);
+        alertId
+    };
+
+    private func _checkSystemHealth() : SystemHealth {
+        let now = Time.now();
+        let hourAgo = now - 3_600_000_000_000;
+        
+        // Calculate error rate
+        let totalRequests = Option.get(systemMetrics.get("totalRequests"), 0);
+        let totalErrors = Option.get(systemMetrics.get("totalErrors"), 0);
+        let errorRate = if (totalRequests == 0) 0.0 
+                       else Float.fromInt(totalErrors) / Float.fromInt(totalRequests);
+        
+        // Calculate average response time
+        let totalResponseTime = Option.get(systemMetrics.get("totalResponseTime"), 0);
+        let avgResponseTime = if (totalRequests == 0) 0 
+                            else totalResponseTime / totalRequests;
+        
+        // Check memory usage
+        let memoryUsage = Option.get(systemMetrics.get("memoryUsage"), 0);
+        
+        // Determine system status
+        let status = if (errorRate > alertThresholds.errorRateThreshold or
+                        avgResponseTime > alertThresholds.responseTimeThreshold or
+                        memoryUsage > alertThresholds.memoryUsageThreshold) {
+            #degraded
+        } else if (errorRate > alertThresholds.errorRateThreshold * 2 or
+                   memoryUsage > alertThresholds.memoryUsageThreshold * 2) {
+            #unhealthy
+        } else {
+            #healthy
+        };
+
+        {
+            status = status;
+            uptime = now - Option.get(systemMetrics.get("startTime"), now);
+            lastChecked = now;
+            memoryUsage = memoryUsage;
+            cyclesBalance = Option.get(systemMetrics.get("cyclesBalance"), 0);
+            activeAlerts = alerts.size();
+            metrics = {
+                requestCount = totalRequests;
+                errorCount = totalErrors;
+                avgResponseTime = avgResponseTime;
+            };
+        }
+    };
+
+    private func _trackCosts() : async () {
+        let now = Time.now();
+        let cyclesBalance = Cycles.balance();
+        let previousMetrics = switch (costTracking.get(now - 86_400_000_000_000)) { // 24 hours ago
+            case (null) null;
+            case (?metrics) ?metrics;
+        };
+
+        let totalRequests = Option.get(systemMetrics.get("totalRequests"), 0);
+        let newMetrics = {
+            cyclesPerRequest = if (totalRequests == 0) 0 else cyclesBalance / totalRequests;
+            totalCyclesUsed = Option.get(systemMetrics.get("totalCyclesUsed"), 0);
+            estimatedDailyCost = switch (previousMetrics) {
+                case (null) 0;
+                case (?prev) {
+                    if (prev.totalCyclesUsed > 0) {
+                        let increase = Float.fromInt(newMetrics.totalCyclesUsed - prev.totalCyclesUsed) / 
+                                     Float.fromInt(prev.totalCyclesUsed);
+                        if (increase > alertThresholds.costIncreaseThreshold) {
+                            ignore _createAlert(
+                                #warning,
+                                "Significant cost increase detected",
+                                ?{
+                                    adId = null;
+                                    region = null;
+                                    errorCount = null;
+                                    responseTime = null;
+                                }
+                            );
+                        };
+                    };
+                    newMetrics.totalCyclesUsed
+                };
+            };
+            timestamp = now;
+        };
+
+        costTracking.put(now, newMetrics);
+    };
+
+    // Health check endpoints
+    public query func getSystemHealth() : async SystemHealth {
+        _checkSystemHealth()
+    };
+
+    public query func getActiveAlerts() : async [Alert] {
+        let activeAlerts = Buffer.Buffer<Alert>(0);
+        for ((_, alert) in alerts.entries()) {
+            if (alert.status == #active) {
+                activeAlerts.add(alert);
+            };
+        };
+        Buffer.toArray(activeAlerts)
+    };
+
+    public shared(msg) func acknowledgeAlert(alertId: Text) : async Result.Result<(), Text> {
+        if (not _isAdmin(msg.caller)) {
+            return #err("Unauthorized");
+        };
+
+        switch (alerts.get(alertId)) {
+            case (null) #err("Alert not found");
+            case (?alert) {
+                if (alert.status != #active) {
+                    return #err("Alert is not active");
+                };
+
+                let updatedAlert = {
+                    alert with
+                    status = #acknowledged;
+                    acknowledgedBy = ?Principal.toText(msg.caller);
+                };
+                alerts.put(alertId, updatedAlert);
+                #ok(())
+            };
+        }
+    };
+
+    public shared(msg) func resolveAlert(alertId: Text) : async Result.Result<(), Text> {
+        if (not _isAdmin(msg.caller)) {
+            return #err("Unauthorized");
+        };
+
+        switch (alerts.get(alertId)) {
+            case (null) #err("Alert not found");
+            case (?alert) {
+                if (alert.status == #resolved) {
+                    return #err("Alert is already resolved");
+                };
+
+                let updatedAlert = {
+                    alert with
+                    status = #resolved;
+                    resolvedBy = ?Principal.toText(msg.caller);
+                    resolvedAt = ?Time.now();
+                };
+                alerts.put(alertId, updatedAlert);
+                #ok(())
+            };
+        }
+    };
+
+    public shared(msg) func updateAlertThresholds(
+        errorRate: ?Float,
+        responseTime: ?Int,
+        memoryUsage: ?Nat,
+        costIncrease: ?Float
+    ) : async Result.Result<(), Text> {
+        if (not _isAdmin(msg.caller)) {
+            return #err("Unauthorized");
+        };
+
+        switch (errorRate) {
+            case (null) {};
+            case (?rate) alertThresholds.errorRateThreshold := rate;
+        };
+
+        switch (responseTime) {
+            case (null) {};
+            case (?time) alertThresholds.responseTimeThreshold := time;
+        };
+
+        switch (memoryUsage) {
+            case (null) {};
+            case (?usage) alertThresholds.memoryUsageThreshold := usage;
+        };
+
+        switch (costIncrease) {
+            case (null) {};
+            case (?increase) alertThresholds.costIncreaseThreshold := increase;
+        };
+
+        #ok(())
+    };
+
+    public query func getCostMetrics(timeRange: TimeRange) : async [CostMetrics] {
+        let metrics = Buffer.Buffer<CostMetrics>(0);
+        for ((timestamp, costMetric) in costTracking.entries()) {
+            if (timestamp >= timeRange.startTime and timestamp <= timeRange.endTime) {
+                metrics.add(costMetric);
+            };
+        };
+        Buffer.toArray(metrics)
     };
 }; 
