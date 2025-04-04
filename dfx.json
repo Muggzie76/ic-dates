@@ -4,14 +4,31 @@
       "main": "src/backend/main.mo",
       "type": "motoko"
     },
+    "profile": {
+      "main": "src/backend/profile.mo",
+      "type": "motoko"
+    },
+    "messaging": {
+      "main": "src/backend/messaging.mo",
+      "type": "motoko"
+    },
+    "token": {
+      "main": "src/backend/token.mo",
+      "type": "motoko"
+    },
     "frontend": {
-      "dependencies": ["backend"],
+      "dependencies": [
+        "backend",
+        "profile",
+        "messaging",
+        "token"
+      ],
       "frontend": {
         "entrypoint": "src/frontend/src/index.html"
       },
       "source": [
         "src/frontend/assets",
-        "dist/frontend"
+        "dist/frontend/"
       ],
       "type": "assets"
     }
