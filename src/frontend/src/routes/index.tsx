@@ -5,6 +5,8 @@ import ProfilePage from '../pages/ProfilePage';
 import MatchingPage from '../pages/MatchingPage';
 import { MessagingPage } from '../pages/MessagingPage';
 import StakingInterface from '../components/StakingInterface';
+import SubscriptionPage from '../pages/SubscriptionPage';
+import AuthPage from '../pages/AuthPage';
 
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const { isAuthenticated } = useAuth();
@@ -44,6 +46,12 @@ export const AppRoutes: React.FC = () => {
                     <StakingInterface />
                 </ProtectedRoute>
             } />
+            <Route path="/subscription" element={
+                <ProtectedRoute>
+                    <SubscriptionPage />
+                </ProtectedRoute>
+            } />
+            <Route path="/auth" element={<AuthPage />} />
         </Routes>
     );
 }; 

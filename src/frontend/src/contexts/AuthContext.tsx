@@ -1,64 +1,117 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { AuthClient } from '@dfinity/auth-client';
+import { HttpAgent } from '@dfinity/agent';
 import { Principal } from '@dfinity/principal';
 
-interface AuthContextType {
-  isAuthenticated: boolean;
-  principal: Principal | null;
-  login: () => Promise<void>;
-  logout: () => Promise<void>;
+export interface User {
+    id: string;
+    profile: {
+        id: Principal;
+        name: string;
+        age: number;
+        gender: string;
+        bio: string;
+        photos: string[];
+        interests: string[];
+        location: string;
+        preferences: {
+            minAge: number;
+            maxAge: number;
+            gender: string;
+            maxDistance: number;
+        };
+        lastActive: bigint;
+    };
 }
 
-const AuthContext = createContext<AuthContextType>({
-  isAuthenticated: false,
-  principal: null,
-  login: async () => {},
-  logout: async () => {},
-});
+export interface AuthContextType {
+    user: User | null;
+    loading: boolean;
+    error: string | null;
+    login: (username: string, password: string) => Promise<void>;
+    logout: () => Promise<void>;
+}
 
-export const useAuth = () => useContext(AuthContext);
+const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [principal, setPrincipal] = useState<Principal | null>(null);
-  const [authClient, setAuthClient] = useState<AuthClient | null>(null);
+    const [user, setUser] = useState<User | null>(null);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    const initAuth = async () => {
-      const client = await AuthClient.create();
-      setAuthClient(client);
-      const isAuthenticated = await client.isAuthenticated();
-      setIsAuthenticated(isAuthenticated);
-      if (isAuthenticated) {
-        const identity = client.getIdentity();
-        setPrincipal(identity.getPrincipal());
-      }
+    useEffect(() => {
+        // Check for existing session
+        checkSession();
+    }, []);
+
+    const checkSession = async () => {
+        try {
+            // TODO: Implement session check with IC
+            setLoading(false);
+        } catch (err) {
+            setError('Failed to check session');
+            setLoading(false);
+        }
     };
-    initAuth();
-  }, []);
 
-  const login = async () => {
-    if (!authClient) return;
-    await authClient.login({
-      identityProvider: process.env.REACT_APP_II_URL || 'https://identity.ic0.app',
-      onSuccess: () => {
-        const identity = authClient.getIdentity();
-        setPrincipal(identity.getPrincipal());
-        setIsAuthenticated(true);
-      },
-    });
-  };
+    const login = async (username: string, password: string) => {
+        try {
+            setLoading(true);
+            // TODO: Implement login with IC
+            setUser({
+                id: 'mock-user-id',
+                profile: {
+                    id: Principal.fromText('2vxsx-fae'),
+                    name: 'John Doe',
+                    age: 25,
+                    gender: 'male',
+                    bio: 'Love hiking and photography',
+                    photos: ['/mock/profile.jpg'],
+                    interests: ['hiking', 'photography', 'travel'],
+                    location: 'San Francisco',
+                    preferences: {
+                        minAge: 23,
+                        maxAge: 30,
+                        gender: 'female',
+                        maxDistance: 50
+                    },
+                    lastActive: BigInt(Date.now())
+                }
+            });
+            setError(null);
+        } catch (err) {
+            setError('Failed to login');
+        } finally {
+            setLoading(false);
+        }
+    };
 
-  const logout = async () => {
-    if (!authClient) return;
-    await authClient.logout();
-    setIsAuthenticated(false);
-    setPrincipal(null);
-  };
+    const logout = async () => {
+        try {
+            setLoading(true);
+            // TODO: Implement logout with IC
+            setUser(null);
+            setError(null);
+        } catch (err) {
+            setError('Failed to logout');
+        } finally {
+            setLoading(false);
+        }
+    };
 
-  return (
-    <AuthContext.Provider value={{ isAuthenticated, principal, login, logout }}>
-      {children}
-    </AuthContext.Provider>
-  );
-}; 
+    return (
+        <AuthContext.Provider value={{ user, loading, error, login, logout }}>
+            {children}
+        </AuthContext.Provider>
+    );
+};
+
+export const useAuth = () => {
+    const context = useContext(AuthContext);
+    if (context === undefined) {
+        throw new Error('useAuth must be used within an AuthProvider');
+    }
+    return context;
+};
+
+export default AuthContext; 

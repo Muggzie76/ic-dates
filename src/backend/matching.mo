@@ -9,6 +9,10 @@ import Principal "mo:base/Principal";
 import Result "mo:base/Result";
 import Text "mo:base/Text";
 import Time "mo:base/Time";
+import Debug "mo:base/Debug";
+import Order "mo:base/Order";
+import Int "mo:base/Int";
+import Float "mo:base/Float";
 
 actor Matching {
     // Types
@@ -19,18 +23,36 @@ actor Matching {
         #right;
     };
 
+    type Profile = {
+        id: Principal;
+        name: Text;
+        age: Nat;
+        gender: Text;
+        bio: Text;
+        photos: [Text];
+        interests: [Text];
+        location: Text;
+        preferences: {
+            minAge: Nat;
+            maxAge: Nat;
+            gender: Text;
+            maxDistance: Nat;
+        };
+        lastActive: Int;
+    };
+
     type Match = {
-        id: MatchId;
-        user1: UserId;
-        user2: UserId;
-        timestamp: Time.Time;
+        id: Text;
+        user1: Principal;
+        user2: Principal;
+        timestamp: Int;
         status: MatchStatus;
     };
 
     type MatchStatus = {
-        #pending;  // When only one user has swiped right
-        #matched;  // When both users have swiped right
-        #expired;  // When match is no longer active
+        #Pending;
+        #Matched;
+        #Rejected;
     };
 
     type SwipeAction = {
@@ -40,25 +62,43 @@ actor Matching {
         timestamp: Time.Time;
     };
 
+    type MatchScore = {
+        profile: Profile;
+        score: Float;
+    };
+
     // Stable storage
-    private stable var matchEntries: [(MatchId, Match)] = [];
+    private stable var matchEntries: [(Text, Match)] = [];
     private stable var swipeEntries: [(UserId, [SwipeAction])] = [];
 
     // Runtime storage
-    private var matches = HashMap.HashMap<MatchId, Match>(0, Text.equal, Text.hash);
+    private var matches = HashMap.HashMap<Text, Match>(1, Text.equal, Text.hash);
     private var swipes = HashMap.HashMap<UserId, Buffer.Buffer<SwipeAction>>(0, Principal.equal, Principal.hash);
+
+    private stable var swipeCounters : [(Principal, Nat)] = [];
+    private var dailySwipes = HashMap.HashMap<Principal, Nat>(1, Principal.equal, Principal.hash);
+
+    private let MAX_DAILY_SWIPES_FREE = 10;
+    private let MAX_DAILY_SWIPES_PREMIUM = 100;
 
     // System functions
     system func preupgrade() {
-        matchEntries := Iter.toArray(matches.entries());
+        let matchBuffer = Buffer.Buffer<(Text, Match)>(1);
+        for ((t, m) in matches.entries()) {
+            matchBuffer.add((t, m));
+        };
+        matchEntries := Buffer.toArray(matchBuffer);
+
+        let swipeBuffer = Buffer.Buffer<(Principal, Nat)>(1);
+        for ((p, n) in dailySwipes.entries()) {
+            swipeBuffer.add((p, n));
+        };
+        swipeCounters := Buffer.toArray(swipeBuffer);
         
         // Convert Buffer to Array for stable storage
-        swipeEntries := Array.map<(UserId, Buffer.Buffer<SwipeAction>), (UserId, [SwipeAction])>(
-            Iter.toArray(swipes.entries()),
-            func((id, buffer): (UserId, Buffer.Buffer<SwipeAction>)): (UserId, [SwipeAction]) {
-                (id, Buffer.toArray(buffer))
-            }
-        );
+        for ((userId, buffer) in swipes.entries()) {
+            swipeEntries := Array.append(swipeEntries, [(userId, Buffer.toArray(buffer))]);
+        };
     };
 
     system func postupgrade() {
@@ -77,6 +117,11 @@ actor Matching {
             swipes.put(id, buffer);
         };
         swipeEntries := [];
+
+        for ((principal, count) in swipeCounters.vals()) {
+            dailySwipes.put(principal, count);
+        };
+        swipeCounters := [];
     };
 
     // Helper functions
@@ -96,70 +141,149 @@ actor Matching {
             user1 = user1;
             user2 = user2;
             timestamp = Time.now();
-            status = #matched;
+            status = #Matched;
         }
     };
 
-    // Public functions
-    public shared(msg) func swipe(targetUser: UserId, direction: SwipeDirection): async Result.Result<Bool, Text> {
-        let currentUser = msg.caller;
-        
-        if (Principal.equal(currentUser, targetUser)) {
-            return #err("Cannot swipe on yourself");
-        };
+    private func _calculateMatchScore(userProfile: Profile, candidateProfile: Profile, hasPriorityMatching: Bool) : Float {
+        var score : Float = 0;
 
-        let swipeAction: SwipeAction = {
-            swiper = currentUser;
-            swiped = targetUser;
-            direction = direction;
-            timestamp = Time.now();
-        };
-
-        // Store the swipe action
-        switch (swipes.get(currentUser)) {
-            case null {
-                let buffer = Buffer.Buffer<SwipeAction>(1);
-                buffer.add(swipeAction);
-                swipes.put(currentUser, buffer);
+        // Age preference match (0-20 points)
+        if (candidateProfile.age >= userProfile.preferences.minAge and 
+            candidateProfile.age <= userProfile.preferences.maxAge) {
+            score += 20;
+        } else {
+            let ageDiff = if (candidateProfile.age < userProfile.preferences.minAge) {
+                Float.fromInt(userProfile.preferences.minAge - candidateProfile.age);
+            } else {
+                Float.fromInt(candidateProfile.age - userProfile.preferences.maxAge);
             };
-            case (?buffer) {
-                buffer.add(swipeAction);
+            score += Float.max(0, 20 - ageDiff);
+        };
+
+        // Gender preference match (0 or 25 points)
+        if (candidateProfile.gender == userProfile.preferences.gender) {
+            score += 25;
+        };
+
+        // Common interests (0-30 points)
+        let userInterests = HashMap.HashMap<Text, Bool>(1, Text.equal, Text.hash);
+        for (interest in userProfile.interests.vals()) {
+            userInterests.put(interest, true);
+        };
+
+        var commonInterests = 0;
+        for (interest in candidateProfile.interests.vals()) {
+            switch (userInterests.get(interest)) {
+                case (?_) { commonInterests += 1; };
+                case null {};
             };
         };
 
-        // If right swipe, check for mutual match
-        switch (direction) {
-            case (#right) {
-                switch (swipes.get(targetUser)) {
-                    case null { return #ok(false) };
-                    case (?targetSwipes) {
-                        for (action in targetSwipes.vals()) {
-                            if (Principal.equal(action.swiped, currentUser) and action.direction == #right) {
-                                // Create new match
-                                let match = createMatch(currentUser, targetUser);
-                                matches.put(match.id, match);
-                                return #ok(true);
-                            };
-                        };
-                    };
-                };
-            };
-            case (#left) { };
+        score += Float.fromInt(commonInterests) * (30 / Float.fromInt(Array.size(userProfile.interests)));
+
+        // Location proximity (0-15 points)
+        if (userProfile.location == candidateProfile.location) {
+            score += 15;
         };
 
-        #ok(false)
+        // Activity score (0-10 points)
+        let currentTime = Time.now();
+        let hoursSinceActive = Float.fromInt(currentTime - candidateProfile.lastActive) / (3600_000_000_000);
+        score += Float.max(0, 10 - hoursSinceActive / 24);
+
+        // Priority matching bonus (20% boost)
+        if (hasPriorityMatching) {
+            score *= 1.2;
+        };
+
+        return score;
     };
 
-    public query(msg) func getMatches(): async [Match] {
-        let currentUser = msg.caller;
-        let userMatches = Buffer.Buffer<Match>(0);
+    private func _getPotentialMatches(userProfile: Profile, hasPriorityMatching: Bool) : [MatchScore] {
+        // TODO: Implement actual profile fetching from profile canister
+        // For now, using mock data
+        let mockProfiles : [Profile] = [];
 
-        for (match in matches.vals()) {
-            if (Principal.equal(match.user1, currentUser) or Principal.equal(match.user2, currentUser)) {
+        let scores = Buffer.Buffer<MatchScore>(0);
+        for (profile in mockProfiles.vals()) {
+            if (profile.id != userProfile.id) {
+                let score = _calculateMatchScore(userProfile, profile, hasPriorityMatching);
+                scores.add({
+                    profile = profile;
+                    score = score;
+                });
+            };
+        };
+
+        let scoresArray = Buffer.toArray(scores);
+        let sortedScores = Array.sort<MatchScore>(scoresArray, func(a: MatchScore, b: MatchScore) : Order.Order {
+            if (a.score > b.score) { #less }
+            else if (a.score < b.score) { #greater }
+            else { #equal }
+        });
+
+        return sortedScores;
+    };
+
+    // Public functions
+    public shared(msg) func swipe(targetId: Principal, direction: Bool) : async Result.Result<Match, Text> {
+        let caller = msg.caller;
+        
+        // Check daily swipe limit
+        let currentSwipes = Option.get(dailySwipes.get(caller), 0);
+        let maxSwipes = MAX_DAILY_SWIPES_FREE; // TODO: Get from subscription service
+
+        if (currentSwipes >= maxSwipes) {
+            return #err("Daily swipe limit reached");
+        };
+
+        // Update swipe counter
+        dailySwipes.put(caller, currentSwipes + 1);
+
+        if (direction) {
+            let matchId = Principal.toText(caller) # "_" # Principal.toText(targetId);
+            let reverseMatchId = Principal.toText(targetId) # "_" # Principal.toText(caller);
+
+            // Check if the other user has already swiped right
+            switch (matches.get(reverseMatchId)) {
+                case (?existingMatch) {
+                    if (existingMatch.status == #Pending) {
+                        let updatedMatch = {
+                            id = reverseMatchId;
+                            user1 = targetId;
+                            user2 = caller;
+                            timestamp = Time.now();
+                            status = #Matched;
+                        };
+                        matches.put(reverseMatchId, updatedMatch);
+                        return #ok(updatedMatch);
+                    };
+                };
+                case null {
+                    let newMatch = {
+                        id = matchId;
+                        user1 = caller;
+                        user2 = targetId;
+                        timestamp = Time.now();
+                        status = #Pending;
+                    };
+                    matches.put(matchId, newMatch);
+                    return #ok(newMatch);
+                };
+            };
+        };
+
+        #err("No match found")
+    };
+
+    public query func getMatches(userId: Principal) : async [Match] {
+        let userMatches = Buffer.Buffer<Match>(0);
+        for ((_, match) in matches.entries()) {
+            if ((match.user1 == userId or match.user2 == userId) and match.status == #Matched) {
                 userMatches.add(match);
             };
         };
-
         Buffer.toArray(userMatches)
     };
 
@@ -181,5 +305,10 @@ actor Matching {
                 #ok(true)
             };
         }
+    };
+
+    public shared(msg) func getPotentialMatches(userProfile: Profile, hasPriorityMatching: Bool) : async [Profile] {
+        let scoredMatches = _getPotentialMatches(userProfile, hasPriorityMatching);
+        Array.map(scoredMatches, func(m: MatchScore) : Profile = m.profile)
     };
 }; 

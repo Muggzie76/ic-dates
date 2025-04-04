@@ -1,45 +1,66 @@
 import { Actor, HttpAgent } from '@dfinity/agent';
 import { Principal } from '@dfinity/principal';
 import { idlFactory } from '../../../declarations/matching/matching.did';
+import { _SERVICE as MatchingService } from '../../../declarations/matching/matching.did.d';
+
+declare global {
+    interface Window {
+        ic: {
+            agent: HttpAgent;
+        };
+    }
+}
+
+export interface Profile {
+    id: Principal;
+    name: string;
+    age: number;
+    gender: string;
+    bio: string;
+    photos: string[];
+    interests: string[];
+    location: string;
+    preferences: {
+        minAge: number;
+        maxAge: number;
+        gender: string;
+        maxDistance: number;
+    };
+    lastActive: bigint;
+}
 
 export interface Match {
     id: string;
     user1: Principal;
     user2: Principal;
     timestamp: bigint;
-    status: { pending: null } | { matched: null } | { expired: null };
+    status: 'Pending' | 'Matched' | 'Rejected';
 }
 
-export type SwipeDirection = { left: null } | { right: null };
+class MatchingServiceClient {
+    private actor: Actor;
+    private service: MatchingService;
 
-class MatchingService {
-    private actor: any;
-    private agent: HttpAgent;
-
-    constructor() {
-        this.agent = new HttpAgent({
-            host: process.env.DFX_NETWORK || 'http://localhost:4943',
+    constructor(canisterId: string, agent: HttpAgent) {
+        this.actor = Actor.createActor<MatchingService>(idlFactory, {
+            agent,
+            canisterId,
         });
-
-        // Only in development, skip certificate verification
-        if (process.env.NODE_ENV !== 'production') {
-            this.agent.fetchRootKey().catch(err => {
-                console.warn('Unable to fetch root key. Check to ensure that your local replica is running');
-                console.error(err);
-            });
-        }
-
-        this.actor = Actor.createActor(idlFactory, {
-            agent: this.agent,
-            canisterId: process.env.MATCHING_CANISTER_ID,
-        });
+        this.service = this.actor;
     }
 
-    async swipe(targetUser: Principal, direction: 'left' | 'right'): Promise<boolean> {
+    async getPotentialMatches(userProfile: Profile, hasPriorityMatching: boolean): Promise<Profile[]> {
         try {
-            const swipeDirection: SwipeDirection = direction === 'right' ? { right: null } : { left: null };
-            const result = await this.actor.swipe(targetUser, swipeDirection);
-            
+            return await this.service.getPotentialMatches(userProfile, hasPriorityMatching);
+        } catch (error) {
+            console.error('Error getting potential matches:', error);
+            throw error;
+        }
+    }
+
+    async swipe(targetId: Principal, direction: boolean): Promise<Match> {
+        try {
+            const result = await this.service.swipe(targetId, direction);
             if ('ok' in result) {
                 return result.ok;
             } else {
@@ -51,39 +72,23 @@ class MatchingService {
         }
     }
 
-    async getMatches(): Promise<Match[]> {
+    async getMatches(userId: Principal): Promise<Match[]> {
         try {
-            return await this.actor.getMatches();
+            return await this.service.getMatches(userId);
         } catch (error) {
-            console.error('Error fetching matches:', error);
+            console.error('Error getting matches:', error);
             throw error;
         }
     }
 
-    async getMatch(matchId: string): Promise<Match | null> {
+    async getDailySwipesRemaining(userId: Principal): Promise<number> {
         try {
-            const result = await this.actor.getMatch(matchId);
-            return result[0] || null;
+            return await this.service.getDailySwipesRemaining(userId);
         } catch (error) {
-            console.error('Error fetching match:', error);
-            throw error;
-        }
-    }
-
-    async unmatch(matchId: string): Promise<boolean> {
-        try {
-            const result = await this.actor.unmatch(matchId);
-            
-            if ('ok' in result) {
-                return result.ok;
-            } else {
-                throw new Error(result.err);
-            }
-        } catch (error) {
-            console.error('Error unmatching:', error);
+            console.error('Error getting daily swipes remaining:', error);
             throw error;
         }
     }
 }
 
-export const matchingService = new MatchingService(); 
+export default MatchingServiceClient; 
