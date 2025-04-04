@@ -1,0 +1,81 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v2
+      with:
+        node-version: '16.x'
+        
+    - name: Install Dependencies
+      run: npm install
+        
+    - name: Install DFX
+      run: sh -ci "$(curl -fsSL https://internetcomputer.org/install.sh)"
+      
+    - name: Start DFX
+      run: dfx start --background
+      
+    - name: Run Tests
+      run: npm test
+      
+  deploy-staging:
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v2
+      with:
+        node-version: '16.x'
+        
+    - name: Install Dependencies
+      run: npm install
+        
+    - name: Install DFX
+      run: sh -ci "$(curl -fsSL https://internetcomputer.org/install.sh)"
+      
+    - name: Deploy to Staging
+      run: |
+        dfx deploy --network ic --no-wallet
+      env:
+        DFX_NETWORK: ic
+        II_URL: ${{ secrets.II_URL }}
+        
+  deploy-production:
+    needs: deploy-staging
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+    - uses: actions/checkout@v2
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v2
+      with:
+        node-version: '16.x'
+        
+    - name: Install Dependencies
+      run: npm install
+        
+    - name: Install DFX
+      run: sh -ci "$(curl -fsSL https://internetcomputer.org/install.sh)"
+      
+    - name: Deploy to Production
+      run: |
+        dfx deploy --network ic --no-wallet
+      env:
+        DFX_NETWORK: ic
+        II_URL: ${{ secrets.II_URL }} 
