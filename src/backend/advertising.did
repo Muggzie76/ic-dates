@@ -31,7 +31,28 @@ type TargetAudience = record {
     interests: vec text;
 };
 
+type ConsentStatus = variant {
+    granted;
+    denied;
+    notSet;
+};
+
+type UserConsent = record {
+    userId: text;
+    advertisingConsent: ConsentStatus;
+    analyticsConsent: ConsentStatus;
+    personalizationConsent: ConsentStatus;
+    lastUpdated: int;
+};
+
+type DataRetentionPolicy = record {
+    metricsRetentionDays: nat;
+    userDataRetentionDays: nat;
+    inactiveAdRetentionDays: nat;
+};
+
 type UserProfile = record {
+    userId: text;
     age: opt nat;
     gender: opt text;
     interests: vec text;
@@ -59,11 +80,108 @@ type PlacementResult = variant {
     err: text;
 };
 
+type TimeRange = record {
+    startTime: int;
+    endTime: int;
+};
+
+type PerformanceMetrics = record {
+    impressions: nat;
+    clicks: nat;
+    ctr: float64;
+    conversions: nat;
+    conversionRate: float64;
+    spend: float64;
+    roi: float64;
+};
+
+type ABTest = record {
+    id: text;
+    name: text;
+    description: text;
+    variants: vec AdContent;
+    startTime: int;
+    endTime: int;
+    metrics: vec record { text; PerformanceMetrics };
+    winner: opt text;
+    status: variant { active; completed; cancelled };
+};
+
+type ContentStatus = variant {
+    pending;
+    approved;
+    rejected;
+    flagged;
+};
+
+type ModerationReason = variant {
+    inappropriate;
+    misleading;
+    offensive;
+    spam;
+    other: text;
+};
+
+type ModerationDecision = record {
+    status: ContentStatus;
+    reason: opt ModerationReason;
+    moderatorId: text;
+    timestamp: int;
+    notes: opt text;
+};
+
+type AdReview = record {
+    adId: text;
+    content: AdContent;
+    status: ContentStatus;
+    decisions: vec ModerationDecision;
+    lastReviewedAt: int;
+};
+
+type FraudScore = record {
+    score: float64;
+    reasons: vec text;
+    lastUpdated: int;
+};
+
+type FraudThresholds = record {
+    maxClicksPerHour: nat;
+    maxImpressionsPerHour: nat;
+    maxClickThroughRate: float64;
+    minTimeBetweenClicks: int;
+    suspiciousIpThreshold: nat;
+};
+
 service : {
     // Admin functions
     createAd: (AdContent, int, int, opt TargetAudience) -> (Result);
     createPlacement: (AdPlacement) -> (PlacementResult);
     updateAdStatus: (AdId, variant { active; paused; ended }) -> (Result);
+
+    // Content moderation functions
+    addModerator: (text) -> (Result);
+    removeModerator: (text) -> (Result);
+    submitAdForReview: (text) -> (Result);
+    reviewAd: (text, ContentStatus, opt ModerationReason, opt text) -> (Result);
+    getPendingReviews: () -> (vec AdReview) query;
+    getAdReview: (text) -> (opt AdReview) query;
+
+    // GDPR compliance functions
+    updateUserConsent: (text, ConsentStatus, ConsentStatus, ConsentStatus) -> (Result);
+    getUserConsent: (text) -> (opt UserConsent) query;
+    deleteUserData: (text) -> (Result);
+    updateDataRetentionPolicy: (DataRetentionPolicy) -> (Result);
+    getDataRetentionPolicy: () -> (DataRetentionPolicy) query;
+    cleanupExpiredData: () -> (Result);
+
+    // Analytics functions
+    createABTest: (text, text, vec AdContent, int) -> (Result);
+    getABTest: (text) -> (opt ABTest) query;
+    getActiveABTests: () -> (vec ABTest) query;
+    endABTest: (text) -> (Result);
+    recordConversion: (text, float64) -> (Result);
+    getMetrics: (text, TimeRange) -> (vec PerformanceMetrics) query;
+    getAggregateMetrics: (text, TimeRange) -> (PerformanceMetrics) query;
 
     // Public query functions
     getAd: (AdId) -> (Result) query;
@@ -75,4 +193,11 @@ service : {
     // Metrics tracking
     recordImpression: (AdId) -> (variant { ok; err: text });
     recordClick: (AdId) -> (variant { ok; err: text });
+
+    // Fraud detection functions
+    recordImpression: (adId: text, ipAddress: text, userAgent: text) -> (variant { ok: null; err: text });
+    recordClick: (adId: text, ipAddress: text, userAgent: text) -> (variant { ok: null; err: text });
+    updateFraudThresholds: (FraudThresholds) -> (variant { ok: null; err: text });
+    getFraudScore: (userId: text) -> (opt FraudScore) query;
+    clearFraudScore: (userId: text) -> (variant { ok: null; err: text });
 }; 
