@@ -1,0 +1,78 @@
+type AdId = text;
+type PlacementId = text;
+
+type AdContent = record {
+    title: text;
+    description: text;
+    imageUrl: opt text;
+    targetUrl: text;
+    callToAction: text;
+};
+
+type AdPlacement = record {
+    id: PlacementId;
+    name: text;
+    description: text;
+    size: record { width: nat; height: nat };
+    position: text;
+    allowedAdTypes: vec text;
+};
+
+type AdMetrics = record {
+    impressions: nat;
+    clicks: nat;
+    lastImpressionTime: int;
+};
+
+type TargetAudience = record {
+    minAge: opt nat;
+    maxAge: opt nat;
+    gender: opt text;
+    interests: vec text;
+};
+
+type UserProfile = record {
+    age: opt nat;
+    gender: opt text;
+    interests: vec text;
+};
+
+type Ad = record {
+    id: AdId;
+    content: AdContent;
+    startTime: int;
+    endTime: int;
+    status: variant { active; paused; ended };
+    targetAudience: opt TargetAudience;
+    metrics: AdMetrics;
+    createdAt: int;
+    updatedAt: int;
+};
+
+type Result = variant {
+    ok: Ad;
+    err: text;
+};
+
+type PlacementResult = variant {
+    ok: AdPlacement;
+    err: text;
+};
+
+service : {
+    // Admin functions
+    createAd: (AdContent, int, int, opt TargetAudience) -> (Result);
+    createPlacement: (AdPlacement) -> (PlacementResult);
+    updateAdStatus: (AdId, variant { active; paused; ended }) -> (Result);
+
+    // Public query functions
+    getAd: (AdId) -> (Result) query;
+    getPlacement: (PlacementId) -> (PlacementResult) query;
+    getActiveAdsForPlacement: (PlacementId) -> (vec Ad) query;
+    getTargetedAdsForUser: (UserProfile, PlacementId) -> (vec Ad) query;
+    getRankedAdsForUser: (UserProfile, PlacementId) -> (vec Ad) query;
+
+    // Metrics tracking
+    recordImpression: (AdId) -> (variant { ok; err: text });
+    recordClick: (AdId) -> (variant { ok; err: text });
+}; 
