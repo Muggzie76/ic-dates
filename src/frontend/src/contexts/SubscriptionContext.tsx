@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { useAuth } from './AuthContext';
 import SubscriptionServiceClient from '../services/SubscriptionService';
-import { HttpAgent } from '@dfinity/agent';
+import { HttpAgent, Actor } from '@dfinity/agent';
 
 declare global {
     interface Window {
@@ -11,20 +11,61 @@ declare global {
     }
 }
 
-export interface SubscriptionContextType {
-    hasPremium: boolean;
+type SubscriptionTier = 'Free' | 'Basic' | 'Premium' | 'VIP';
+
+type SubscriptionState = {
+    tier: SubscriptionTier;
+    startTime: bigint;
+    endTime: bigint;
+    autoRenew: boolean;
+    features: {
+        maxSwipesPerDay: number;
+        maxMessagesPerDay: number;
+        canSeeWhoLikedYou: boolean;
+        priorityMatching: boolean;
+        profileBoosts: number;
+        hideAds: boolean;
+        verifiedBadge: boolean;
+        customTheme: boolean;
+    };
+};
+
+type SubscriptionContextType = {
+    subscription: SubscriptionState | null;
     loading: boolean;
     error: string | null;
-    subscribe: (plan: string) => Promise<void>;
-    unsubscribe: () => Promise<void>;
-    checkSubscriptionStatus: () => Promise<void>;
-}
+    checkFeatureAccess: (feature: string) => Promise<boolean>;
+    updateSubscription: (tier: SubscriptionTier) => Promise<void>;
+};
 
-const SubscriptionContext = createContext<SubscriptionContextType | undefined>(undefined);
+const defaultState: SubscriptionState = {
+    tier: 'Free',
+    startTime: BigInt(0),
+    endTime: BigInt(0),
+    autoRenew: false,
+    features: {
+        maxSwipesPerDay: 10,
+        maxMessagesPerDay: 5,
+        canSeeWhoLikedYou: false,
+        priorityMatching: false,
+        profileBoosts: 0,
+        hideAds: false,
+        verifiedBadge: false,
+        customTheme: false
+    }
+};
+
+const SubscriptionContext = createContext<SubscriptionContextType>({
+    subscription: defaultState,
+    loading: false,
+    error: null,
+    checkFeatureAccess: async () => false,
+    updateSubscription: async () => {}
+});
 
 export const SubscriptionProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const { user } = useAuth();
-    const [hasPremium, setHasPremium] = useState(false);
+    const [subscription, setSubscription] = useState<SubscriptionState | null>(defaultState);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
@@ -37,7 +78,7 @@ export const SubscriptionProvider: React.FC<{ children: React.ReactNode }> = ({ 
         if (user) {
             checkSubscriptionStatus();
         } else {
-            setHasPremium(false);
+            setSubscription(null);
             setLoading(false);
         }
     }, [user]);
@@ -47,7 +88,22 @@ export const SubscriptionProvider: React.FC<{ children: React.ReactNode }> = ({ 
         try {
             setLoading(true);
             const status = await subscriptionService.checkSubscription(user.id);
-            setHasPremium(status.active && status.plan === 'premium');
+            setSubscription({
+                tier: status.plan as SubscriptionTier,
+                startTime: BigInt(status.startTime),
+                endTime: BigInt(status.endTime),
+                autoRenew: status.autoRenew,
+                features: {
+                    maxSwipesPerDay: status.features.maxSwipesPerDay,
+                    maxMessagesPerDay: status.features.maxMessagesPerDay,
+                    canSeeWhoLikedYou: status.features.canSeeWhoLikedYou,
+                    priorityMatching: status.features.priorityMatching,
+                    profileBoosts: status.features.profileBoosts,
+                    hideAds: status.features.hideAds,
+                    verifiedBadge: status.features.verifiedBadge,
+                    customTheme: status.features.customTheme
+                }
+            });
             setError(null);
         } catch (err) {
             setError('Failed to check subscription status');
@@ -57,32 +113,28 @@ export const SubscriptionProvider: React.FC<{ children: React.ReactNode }> = ({ 
         }
     };
 
-    const subscribe = async (plan: string) => {
-        if (!user) return;
+    const checkFeatureAccess = async (feature: string): Promise<boolean> => {
+        if (!subscription) return false;
+        
         try {
-            setLoading(true);
-            await subscriptionService.subscribe(user.id, plan);
-            await checkSubscriptionStatus();
-            setError(null);
+            const result = await subscriptionService.checkFeatureAccess(user.id, feature);
+            return result;
         } catch (err) {
-            setError('Failed to subscribe');
-            console.error(err);
-            throw err;
-        } finally {
-            setLoading(false);
+            console.error('Feature access check error:', err);
+            return false;
         }
     };
 
-    const unsubscribe = async () => {
+    const updateSubscription = async (tier: SubscriptionTier): Promise<void> => {
         if (!user) return;
         try {
             setLoading(true);
-            await subscriptionService.unsubscribe(user.id);
+            await subscriptionService.updateSubscription(user.id, tier);
             await checkSubscriptionStatus();
             setError(null);
         } catch (err) {
-            setError('Failed to unsubscribe');
-            console.error(err);
+            setError('Failed to update subscription');
+            console.error('Subscription update error:', err);
             throw err;
         } finally {
             setLoading(false);
@@ -92,12 +144,11 @@ export const SubscriptionProvider: React.FC<{ children: React.ReactNode }> = ({ 
     return (
         <SubscriptionContext.Provider
             value={{
-                hasPremium,
+                subscription,
                 loading,
                 error,
-                subscribe,
-                unsubscribe,
-                checkSubscriptionStatus,
+                checkFeatureAccess,
+                updateSubscription
             }}
         >
             {children}

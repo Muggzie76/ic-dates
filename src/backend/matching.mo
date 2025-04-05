@@ -70,16 +70,35 @@ actor Matching {
     // Stable storage
     private stable var matchEntries: [(Text, Match)] = [];
     private stable var swipeEntries: [(UserId, [SwipeAction])] = [];
+    private stable var likeEntries : [(UserId, [UserId])] = [];
 
     // Runtime storage
     private var matches = HashMap.HashMap<Text, Match>(1, Text.equal, Text.hash);
     private var swipes = HashMap.HashMap<UserId, Buffer.Buffer<SwipeAction>>(0, Principal.equal, Principal.hash);
+    private var likes = HashMap.HashMap<UserId, Buffer.Buffer<UserId>>(1, Principal.equal, Principal.hash);
 
     private stable var swipeCounters : [(Principal, Nat)] = [];
     private var dailySwipes = HashMap.HashMap<Principal, Nat>(1, Principal.equal, Principal.hash);
 
     private let MAX_DAILY_SWIPES_FREE = 10;
     private let MAX_DAILY_SWIPES_PREMIUM = 100;
+
+    // Add subscription canister interface
+    private let subscriptionCanister = actor "SUBSCRIPTION_CANISTER_ID" : actor {
+        checkFeatureAccess : shared (Principal, Text) -> async Bool;
+    };
+
+    // Add profile canister interface
+    private let profileCanister = actor "PROFILE_CANISTER_ID" : actor {
+        searchProfiles : shared ({
+            minAge: ?Nat;
+            maxAge: ?Nat;
+            gender: ?Text;
+            interests: ?[Text];
+            maxDistance: ?Nat;
+        }) -> async [Profile];
+        getProfile : shared (Principal) -> async Result.Result<Profile, Text>;
+    };
 
     // System functions
     system func preupgrade() {
@@ -99,6 +118,12 @@ actor Matching {
         for ((userId, buffer) in swipes.entries()) {
             swipeEntries := Array.append(swipeEntries, [(userId, Buffer.toArray(buffer))]);
         };
+
+        let likeBuffer = Buffer.Buffer<(UserId, [UserId])>(1);
+        for ((userId, likesList) in likes.entries()) {
+            likeBuffer.add((userId, Buffer.toArray(likesList)));
+        };
+        likeEntries := Buffer.toArray(likeBuffer);
     };
 
     system func postupgrade() {
@@ -122,6 +147,15 @@ actor Matching {
             dailySwipes.put(principal, count);
         };
         swipeCounters := [];
+
+        for ((userId, userLikes) in likeEntries.vals()) {
+            let likeBuffer = Buffer.Buffer<UserId>(userLikes.size());
+            for (like in userLikes.vals()) {
+                likeBuffer.add(like);
+            };
+            likes.put(userId, likeBuffer);
+        };
+        likeEntries := [];
     };
 
     // Helper functions
@@ -201,12 +235,17 @@ actor Matching {
     };
 
     private func _getPotentialMatches(userProfile: Profile, hasPriorityMatching: Bool) : [MatchScore] {
-        // TODO: Implement actual profile fetching from profile canister
-        // For now, using mock data
-        let mockProfiles : [Profile] = [];
+        // Get potential matches based on user preferences
+        let potentialProfiles = await* profileCanister.searchProfiles({
+            minAge = ?userProfile.preferences.minAge;
+            maxAge = ?userProfile.preferences.maxAge;
+            gender = ?userProfile.preferences.gender;
+            interests = null;
+            maxDistance = ?userProfile.preferences.maxDistance;
+        });
 
         let scores = Buffer.Buffer<MatchScore>(0);
-        for (profile in mockProfiles.vals()) {
+        for (profile in potentialProfiles.vals()) {
             if (profile.id != userProfile.id) {
                 let score = _calculateMatchScore(userProfile, profile, hasPriorityMatching);
                 scores.add({
@@ -217,29 +256,53 @@ actor Matching {
         };
 
         let scoresArray = Buffer.toArray(scores);
-        let sortedScores = Array.sort<MatchScore>(scoresArray, func(a: MatchScore, b: MatchScore) : Order.Order {
+        Array.sort<MatchScore>(scoresArray, func(a: MatchScore, b: MatchScore) : Order.Order {
             if (a.score > b.score) { #less }
             else if (a.score < b.score) { #greater }
             else { #equal }
         });
+        return scoresArray;
+    };
 
-        return sortedScores;
+    // Update getPotentialMatches to handle async call
+    public shared(msg) func getPotentialMatches(userProfile: Profile) : async [Profile] {
+        let hasPriorityMatching = await subscriptionCanister.checkFeatureAccess(msg.caller, "priorityMatching");
+        let scoredMatches = await* _getPotentialMatches(userProfile, hasPriorityMatching);
+        return Array.map(scoredMatches, func(m: MatchScore) : Profile = m.profile);
     };
 
     // Public functions
     public shared(msg) func swipe(targetId: Principal, direction: Bool) : async Result.Result<Match, Text> {
         let caller = msg.caller;
         
-        // Check daily swipe limit
+        // Check daily swipe limit based on subscription
+        let hasPremium = await subscriptionCanister.checkFeatureAccess(caller, "priorityMatching");
+        let maxSwipes = if (hasPremium) { MAX_DAILY_SWIPES_PREMIUM } else { MAX_DAILY_SWIPES_FREE };
+        
         let currentSwipes = Option.get(dailySwipes.get(caller), 0);
-        let maxSwipes = MAX_DAILY_SWIPES_FREE; // TODO: Get from subscription service
-
         if (currentSwipes >= maxSwipes) {
             return #err("Daily swipe limit reached");
         };
 
         // Update swipe counter
         dailySwipes.put(caller, currentSwipes + 1);
+
+        // Track like if direction is right swipe
+        if (direction) {
+            switch (likes.get(targetId)) {
+                case (null) {
+                    let newLikes = Buffer.Buffer<UserId>(1);
+                    newLikes.add(caller);
+                    likes.put(targetId, newLikes);
+                };
+                case (?existingLikes) {
+                    if (not Buffer.contains<UserId>(existingLikes, caller, Principal.equal)) {
+                        existingLikes.add(caller);
+                        likes.put(targetId, existingLikes);
+                    };
+                };
+            };
+        };
 
         if (direction) {
             let matchId = Principal.toText(caller) # "_" # Principal.toText(targetId);
@@ -307,8 +370,35 @@ actor Matching {
         }
     };
 
-    public shared(msg) func getPotentialMatches(userProfile: Profile, hasPriorityMatching: Bool) : async [Profile] {
-        let scoredMatches = _getPotentialMatches(userProfile, hasPriorityMatching);
-        Array.map(scoredMatches, func(m: MatchScore) : Profile = m.profile)
+    public shared(msg) func getWhoLikedMe() : async Result.Result<[Profile], Text> {
+        let caller = msg.caller;
+        
+        // Check if user has access to this premium feature
+        let canSeeWhoLikedYou = await subscriptionCanister.checkFeatureAccess(caller, "canSeeWhoLikedYou");
+        if (not canSeeWhoLikedYou) {
+            return #err("This feature is only available for premium users");
+        };
+
+        switch (likes.get(caller)) {
+            case (null) { #ok([]) };
+            case (?userLikes) {
+                let likeProfiles = Buffer.Buffer<Profile>(userLikes.size());
+                for (userId in userLikes.vals()) {
+                    let profile = await profileCanister.getProfile(userId);
+                    switch (profile) {
+                        case (#ok(p)) { likeProfiles.add(p) };
+                        case (#err(_)) {}; // Skip profiles that couldn't be fetched
+                    };
+                };
+                #ok(Buffer.toArray(likeProfiles))
+            };
+        }
+    };
+
+    public query func getLikeCount(userId: Principal) : async Nat {
+        switch (likes.get(userId)) {
+            case (null) { 0 };
+            case (?userLikes) { userLikes.size() };
+        }
     };
 }; 

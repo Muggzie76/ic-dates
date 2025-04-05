@@ -16,12 +16,18 @@
       "main": "src/backend/token.mo",
       "type": "motoko"
     },
+    "advertising": {
+      "main": "src/backend/advertising.mo",
+      "type": "motoko",
+      "candid": "src/backend/advertising.did"
+    },
     "frontend": {
       "dependencies": [
         "backend",
         "profile",
         "messaging",
-        "token"
+        "token",
+        "advertising"
       ],
       "frontend": {
         "entrypoint": "src/frontend/src/index.html"
